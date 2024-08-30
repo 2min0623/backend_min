@@ -272,15 +272,15 @@ def session_opener():
 
 
 
-def verify(p1, p2):
-    return pwd_context.verify(p1, p2)
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
 
 
-def check_user_password_is_correct(db, n, pwd):
-    OuO = db.query(User).filter(User.username == n).first()
-    if not verify(pwd, OuO.hashed_password):
+def check_user_password_is_correct(db, username,plain_password):
+    user = db.query(User).filter(User.username == username).first()
+    if not verify_password(plain_password, user.hashed_password):
         return False
-    return OuO
+    return user
 
 
 def authenticate_user_token(
@@ -337,67 +337,46 @@ def read_users_me(user=Depends(authenticate_user_token)):
 _id_counter = itertools.count(start=1000000)
 
 
-def get_article_upvote_details(article_id, uid, db):
-    cnt = (
+def get_article_upvote_details(article_id, user_id, db):
+    upvote_count = (
         db.query(user_news_association_table)
         .filter_by(news_articles_id=article_id)
         .count()
     )
-    voted = False
-    if uid:
+    user_voted = False
+    if user_id:
         voted = (
                 db.query(user_news_association_table)
-                .filter_by(news_articles_id=article_id, user_id=uid)
+                .filter_by(news_articles_id=article_id, user_id=user_id)
                 .first()
                 is not None
         )
-    return cnt, voted
+    return upvote_count, user_voted
 
+def get_news_with_upvotes(db, user_id=None):
+    """
+    Fetch a list of news articles with upvote details.
+
+    :param db: Database session dependency
+    :param user_id: Optional user ID to check if the user has upvoted the article
+    :return: List of news articles with upvote count and upvoted status
+    """
+    news_articles = db.query(NewsArticle).order_by(NewsArticle.time.desc()).all()
+    result = []
+    for article in news_articles:
+        upvotes, upvoted = get_article_upvote_details(article.id, user_id, db)
+        result.append(
+            {**article.__dict__, "upvotes": upvotes, "is_upvoted": upvoted}
+        )
+    return result
 
 @app.get("/api/v1/news/news")
 def read_news(db=Depends(session_opener)):
-    """
-    read new
+    return get_news_with_upvotes(db)
 
-    :param db:
-    :return:
-    """
-    news = db.query(NewsArticle).order_by(NewsArticle.time.desc()).all()
-    result = []
-    for n in news:
-        upvotes, upvoted = get_article_upvote_details(n.id, None, db)
-        result.append(
-            {**n.__dict__, "upvotes": upvotes, "is_upvoted": upvoted}
-        )
-    return result
-
-
-@app.get(
-    "/api/v1/news/user_news"
-)
-def read_user_news(
-        db=Depends(session_opener),
-        u=Depends(authenticate_user_token)
-):
-    """
-    read user new
-
-    :param db:
-    :param u:
-    :return:
-    """
-    news = db.query(NewsArticle).order_by(NewsArticle.time.desc()).all()
-    result = []
-    for article in news:
-        upvotes, upvoted = get_article_upvote_details(article.id, u.id, db)
-        result.append(
-            {
-                **article.__dict__,
-                "upvotes": upvotes,
-                "is_upvoted": upvoted,
-            }
-        )
-    return result
+@app.get("/api/v1/news/user_news")
+def read_user_news(db=Depends(session_opener), user=Depends(authenticate_user_token)):
+    return get_news_with_upvotes(db, user.id)
 
 class PromptRequest(BaseModel):
     prompt: str
@@ -477,43 +456,43 @@ async def news_summary(
     return response
 
 
-@app.post("/api/v1/news/{id}/upvote")
+@app.post("/api/v1/news/{article_id}/upvote")
 def upvote_article(
-        id,
+        article_id:int,
         db=Depends(session_opener),
-        u=Depends(authenticate_user_token),
+        user=Depends(authenticate_user_token),
 ):
-    message = toggle_upvote(id, u.id, db)
+    message = toggle_upvote(id, user.id, db)
     return {"message": message}
 
 
-def toggle_upvote(n_id, u_id, db):
+def toggle_upvote(article_id, user_id, db):
     existing_upvote = db.execute(
         select(user_news_association_table).where(
-            user_news_association_table.c.news_articles_id == n_id,
-            user_news_association_table.c.user_id == u_id,
+            user_news_association_table.c.news_articles_id == article_id,
+            user_news_association_table.c.user_id == user_id,
         )
     ).scalar()
 
     if existing_upvote:
         delete_stmt = delete(user_news_association_table).where(
-            user_news_association_table.c.news_articles_id == n_id,
-            user_news_association_table.c.user_id == u_id,
+            user_news_association_table.c.news_articles_id == article_id,
+            user_news_association_table.c.user_id == user_id,
         )
         db.execute(delete_stmt)
         db.commit()
         return "Upvote removed"
     else:
         insert_stmt = insert(user_news_association_table).values(
-            news_articles_id=n_id, user_id=u_id
+            news_articles_id=article_id, user_id=user_id
         )
         db.execute(insert_stmt)
         db.commit()
         return "Article upvoted"
 
 
-def news_exists(id2, db: Session):
-    return db.query(NewsArticle).filter_by(id=id2).first() is not None
+def news_exists(article_id, db: Session):
+    return db.query(NewsArticle).filter_by(id=article_id).first() is not None
 
 
 @app.get("/api/v1/prices/necessities-price")
